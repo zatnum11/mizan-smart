@@ -3,7 +3,7 @@
         android:allowBackup="true"
         android:label="الميزان الذكي"
         android:supportsRtl="true"
-        android:theme="@style/AppTheme">
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
