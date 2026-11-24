@@ -10,7 +10,6 @@ import android.graphics.drawable.GradientDrawable
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
-import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -36,6 +35,7 @@ class MainActivity : Activity() {
     private var activeInput: EditText? = null
     private val history = mutableListOf<JSONObject>()
     private val fmt = DecimalFormat("#,##0.####", DecimalFormatSymbols(Locale.US))
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
@@ -56,6 +56,7 @@ class MainActivity : Activity() {
             setContentView(err)
         }
     }
+
     private fun bg(color: Int, radius: Float = 18f): GradientDrawable =
         GradientDrawable().apply { setColor(color); cornerRadius = radius }
 
@@ -78,7 +79,7 @@ class MainActivity : Activity() {
         setPadding(0, 0, 0, dp(12))
     }
 
-    private fun field(label: String, hint: String, decimal: Boolean = true): EditText {
+    private fun field(label: String, hint: String, target: (EditText) -> Unit, decimal: Boolean = true): LinearLayout {
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val labelView = text(label, 12f, Color.DKGRAY, false)
         labelView.gravity = Gravity.RIGHT
@@ -107,8 +108,9 @@ class MainActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) { calculate() }
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
+        target(e)
         wrap.addView(e, LinearLayout.LayoutParams(-1, dp(49)))
-        return e
+        return wrap
     }
 
     private fun buildScreen() {
@@ -142,9 +144,8 @@ class MainActivity : Activity() {
         val baseRow = horizontal()
         val col1 = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val col2 = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        baseWeight = field("الوزن الإجمالي (جرام)", "مثلاً 1000")
-        basePrice = field("السعر الإجمالي", "مثلاً 5000")
-        col1.addView(baseWeight); col2.addView(basePrice)
+        col1.addView(field("الوزن الإجمالي (جرام)", "مثلاً 1000", { baseWeight = it }))
+        col2.addView(field("السعر الإجمالي", "مثلاً 5000", { basePrice = it }))
         baseRow.addView(col1, LinearLayout.LayoutParams(0, -2, 1f))
         baseRow.addView(col2, LinearLayout.LayoutParams(0, -2, 1f))
         baseCard.addView(baseRow)
@@ -174,9 +175,8 @@ class MainActivity : Activity() {
         val row = horizontal()
         val qcol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val ccol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        wantedWeight = field("الوزن المطلوب (جرام)", "مثلاً 250")
-        currency = field("العملة (اختياري)", "ريال", false)
-        qcol.addView(wantedWeight); ccol.addView(currency)
+        qcol.addView(field("الوزن المطلوب (جرام)", "مثلاً 250", { wantedWeight = it }))
+        ccol.addView(field("العملة (اختياري)", "ريال", { currency = it }, false))
         row.addView(qcol, LinearLayout.LayoutParams(0,-2,1f))
         row.addView(ccol, LinearLayout.LayoutParams(0,-2,1f))
         targetCard.addView(row)
@@ -323,6 +323,7 @@ class MainActivity : Activity() {
         history.forEach { arr.put(it) }
         getSharedPreferences("mizan", Context.MODE_PRIVATE).edit().putString("history",arr.toString()).apply()
     }
+
     private fun loadHistory() {
         val raw = getSharedPreferences("mizan", Context.MODE_PRIVATE).getString("history","[]") ?: "[]"
         try {
@@ -330,6 +331,7 @@ class MainActivity : Activity() {
             for (i in 0 until arr.length()) history.add(arr.getJSONObject(i))
         } catch (_: Exception) {}
     }
+
     private fun shareHistory() {
         if (history.isEmpty()) {
             Toast.makeText(this,"السجل فارغ",Toast.LENGTH_SHORT).show(); return
