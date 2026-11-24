@@ -36,17 +36,26 @@ class MainActivity : Activity() {
     private var activeInput: EditText? = null
     private val history = mutableListOf<JSONObject>()
     private val fmt = DecimalFormat("#,##0.####", DecimalFormatSymbols(Locale.US))
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = deep
-        window.navigationBarColor = deep
-        loadHistory()
-        buildScreen()
-        calculate()
-        renderHistory()
+        try {
+            window.statusBarColor = deep
+            window.navigationBarColor = deep
+            loadHistory()
+            buildScreen()
+            calculate()
+            renderHistory()
+        } catch (e: Throwable) {
+            val err = TextView(this).apply {
+                text = "خطأ عند التشغيل:\n${e::class.java.simpleName}: ${e.message}\n\n${e.stackTraceToString().take(900)}"
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.rgb(120, 20, 20))
+                setPadding(32, 48, 32, 32)
+                textSize = 13f
+            }
+            setContentView(err)
+        }
     }
-
     private fun bg(color: Int, radius: Float = 18f): GradientDrawable =
         GradientDrawable().apply { setColor(color); cornerRadius = radius }
 
