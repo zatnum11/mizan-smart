@@ -24,15 +24,19 @@ class MainActivity : Activity() {
     private val ink = Color.rgb(23,37,33)
     private lateinit var baseWeight: EditText
     private lateinit var basePrice: EditText
-    private lateinit var wantedWeight: EditText
+    private lateinit var calcInput: EditText
+    private lateinit var calcInputLabel: TextView
     private lateinit var currency: EditText
     private lateinit var unitValue: TextView
     private lateinit var hundredValue: TextView
     private lateinit var kiloValue: TextView
+    private lateinit var resultTitle: TextView
     private lateinit var targetValue: TextView
+    private lateinit var swapButton: Button
     private lateinit var historyBox: LinearLayout
     private lateinit var activeLabel: TextView
     private var activeInput: EditText? = null
+    private var reverseMode = false // false: الوزن -> السعر | true: السعر -> الوزن
     private val history = mutableListOf<JSONObject>()
     private val fmt = DecimalFormat("#,##0.####", DecimalFormatSymbols(Locale.US))
 
@@ -79,10 +83,17 @@ class MainActivity : Activity() {
         setPadding(0, 0, 0, dp(12))
     }
 
-    private fun field(label: String, hint: String, target: (EditText) -> Unit, decimal: Boolean = true): LinearLayout {
+    private fun field(
+        label: String,
+        hint: String,
+        target: (EditText) -> Unit,
+        labelRef: ((TextView) -> Unit)? = null,
+        decimal: Boolean = true
+    ): LinearLayout {
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val labelView = text(label, 12f, Color.DKGRAY, false)
         labelView.gravity = Gravity.RIGHT
+        labelRef?.invoke(labelView)
         wrap.addView(labelView)
         val e = EditText(this).apply {
             this.hint = hint
@@ -100,7 +111,7 @@ class MainActivity : Activity() {
         e.onFocusChangeListener = View.OnFocusChangeListener { _, has ->
             if (has) {
                 activeInput = e
-                activeLabel.text = label
+                activeLabel.text = "الحقل المحدد: ${labelView.text}"
             }
         }
         e.addTextChangedListener(object : android.text.TextWatcher {
@@ -171,28 +182,58 @@ class MainActivity : Activity() {
         content.addView(display, marginParams())
 
         val targetCard = card()
-        targetCard.addView(title("② حساب سعر وزن محدد"))
+        targetCard.addView(title("② حساب سعر وزن محدد أو وزن قيمة"))
+
+        val swapBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = bg(Color.rgb(245, 249, 246), 14f)
+        }
+        swapBar.addView(text("الوزن", 15f, deep, true).apply {
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        swapButton = button("⇄ تبديل", pale, deep).apply {
+            textSize = 13f
+            setOnClickListener { toggleMode() }
+        }
+        swapBar.addView(swapButton, LinearLayout.LayoutParams(-2, dp(36)).apply {
+            setMargins(dp(8), 0, dp(8), 0)
+        })
+        swapBar.addView(text("السعر", 15f, deep, true).apply {
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        targetCard.addView(swapBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+
         val row = horizontal()
         val qcol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val ccol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        qcol.addView(field("الوزن المطلوب (جرام)", "مثلاً 250", { wantedWeight = it }))
-        ccol.addView(field("العملة (اختياري)", "ريال", { currency = it }, false))
+        qcol.addView(field(
+            "الوزن المطلوب (جرام)",
+            "مثلاً 250",
+            { calcInput = it },
+            { calcInputLabel = it }
+        ))
+        ccol.addView(field("العملة (اختياري)", "ريال", { currency = it }, decimal = false))
         row.addView(qcol, LinearLayout.LayoutParams(0,-2,1f))
         row.addView(ccol, LinearLayout.LayoutParams(0,-2,1f))
         targetCard.addView(row)
+
         val result = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(dp(10), dp(10), dp(10), dp(10)); background = bg(pale, 14f)
         }
-        result.addView(text("السعر المستحق لهذا الوزن", 12f, green).apply { gravity = Gravity.CENTER })
+        resultTitle = text("السعر المستحق لهذا الوزن", 12f, green).apply { gravity = Gravity.CENTER }
+        result.addView(resultTitle)
         targetValue = text("—", 30f, deep, true).apply { gravity = Gravity.CENTER }
         result.addView(targetValue)
         targetCard.addView(result, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
         val add = button("＋ أضف إلى قائمة الحسابات", green, Color.WHITE)
         add.setOnClickListener { addCurrent() }
         targetCard.addView(add, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(10) })
         val direct = button("بيع مباشر: اعتماد الوزن وإضافة العملية", deep, Color.WHITE)
-        direct.setOnClickListener { addCurrent(); wantedWeight.setText(""); wantedWeight.requestFocus() }
+        direct.setOnClickListener { addCurrent(); calcInput.setText(""); calcInput.requestFocus() }
         targetCard.addView(direct, LinearLayout.LayoutParams(-1, dp(46)).apply { topMargin = dp(8) })
         content.addView(targetCard, marginParams())
 
@@ -231,12 +272,33 @@ class MainActivity : Activity() {
 
         val reset = button("تصفير العملية الحالية", Color.rgb(255,240,231), Color.rgb(166,77,34))
         reset.setOnClickListener {
-            baseWeight.setText(""); basePrice.setText(""); wantedWeight.setText("")
+            baseWeight.setText(""); basePrice.setText(""); calcInput.setText("")
             calculate(); baseWeight.requestFocus()
         }
         content.addView(reset, marginParams())
         setContentView(root)
         baseWeight.requestFocus()
+    }
+
+    private fun toggleMode() {
+        reverseMode = !reverseMode
+        if (reverseMode) {
+            calcInputLabel.text = "المبلغ المطلوب"
+            calcInput.hint = "مثلاً 500"
+            resultTitle.text = "الوزن المقابل لهذا المبلغ (جرام)"
+            swapButton.background = bg(green, 12f)
+            swapButton.setTextColor(Color.WHITE)
+        } else {
+            calcInputLabel.text = "الوزن المطلوب (جرام)"
+            calcInput.hint = "مثلاً 250"
+            resultTitle.text = "السعر المستحق لهذا الوزن"
+            swapButton.background = bg(pale, 12f)
+            swapButton.setTextColor(deep)
+        }
+        if (activeInput == calcInput) {
+            activeLabel.text = "الحقل المحدد: ${calcInputLabel.text}"
+        }
+        calculate()
     }
 
     private fun horizontal() = LinearLayout(this).apply {
@@ -257,12 +319,21 @@ class MainActivity : Activity() {
     private fun number(e: EditText): Double? = e.text.toString().trim().replace(',', '.').toDoubleOrNull()
 
     private fun calculate() {
-        val w = number(baseWeight); val p = number(basePrice); val q = number(wantedWeight)
+        val w = number(baseWeight); val p = number(basePrice); val x = number(calcInput)
         val unit = if (w != null && p != null && w > 0 && p >= 0) p / w else null
         unitValue.text = unit?.let { fmt.format(it) } ?: "—"
         hundredValue.text = unit?.let { fmt.format(it * 100) } ?: "—"
         kiloValue.text = unit?.let { fmt.format(it * 1000) } ?: "—"
-        targetValue.text = if (unit != null && q != null && q >= 0) fmt.format(unit*q) else "—"
+        targetValue.text = if (unit != null && x != null && x >= 0) {
+            if (reverseMode) {
+                if (unit > 0) "${fmt.format(x / unit)} جرام" else "—"
+            } else {
+                val cur = currency.text.toString().trim()
+                if (cur.isNotEmpty()) "${fmt.format(x * unit)} $cur" else fmt.format(x * unit)
+            }
+        } else {
+            "—"
+        }
     }
 
     private fun keypad(key: String) {
@@ -279,15 +350,24 @@ class MainActivity : Activity() {
     }
 
     private fun addCurrent() {
-        val w = number(baseWeight); val p = number(basePrice); val q = number(wantedWeight)
-        if (w == null || p == null || q == null || w <= 0 || p < 0 || q < 0) {
-            Toast.makeText(this, "أدخل الوزن والسعر الإجمالي والوزن المطلوب بشكل صحيح", Toast.LENGTH_LONG).show()
+        val w = number(baseWeight); val p = number(basePrice); val x = number(calcInput)
+        if (w == null || p == null || x == null || w <= 0 || p < 0 || x < 0) {
+            Toast.makeText(this, "أدخل الوزن والسعر الإجمالي والقيمة المطلوبة بشكل صحيح", Toast.LENGTH_LONG).show()
             return
         }
-        val unit = p/w
-        val item = JSONObject().put("weight",q).put("price",unit*q).put("unit",unit)
-            .put("currency",currency.text.toString().trim())
-        history.add(0,item)
+        val unit = p / w
+        val weight = if (reverseMode) {
+            if (unit > 0) x / unit else {
+                Toast.makeText(this, "سعر الجرام يجب أن يكون أكبر من صفر", Toast.LENGTH_LONG).show()
+                return
+            }
+        } else {
+            x
+        }
+        val price = if (reverseMode) x else unit * x
+        val item = JSONObject().put("weight", weight).put("price", price).put("unit", unit)
+            .put("currency", currency.text.toString().trim())
+        history.add(0, item)
         saveHistory(); renderHistory()
         Toast.makeText(this, "تمت إضافة العملية إلى السجل", Toast.LENGTH_SHORT).show()
     }
