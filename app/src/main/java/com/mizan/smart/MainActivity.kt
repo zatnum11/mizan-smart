@@ -1,51 +1,85 @@
 package com.mizan.smart
 
 import android.app.Activity
-import android.os.Bundle
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.pdf.PdfDocument
+import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : Activity() {
-    private val deep = Color.rgb(18,60,53)
-    private val green = Color.rgb(29,106,86)
-    private val pale = Color.rgb(237,245,239)
-    private val ink = Color.rgb(23,37,33)
+    private val deep = Color.rgb(18, 60, 53)
+    private val green = Color.rgb(29, 106, 86)
+    private val pale = Color.rgb(237, 245, 239)
+    private val ink = Color.rgb(23, 37, 33)
+    private val accentOrange = Color.rgb(166, 77, 34)
+    private val softOrange = Color.rgb(255, 240, 231)
+
+    // حقول الإدخال
     private lateinit var baseWeight: EditText
     private lateinit var basePrice: EditText
     private lateinit var calcInput: EditText
     private lateinit var calcInputLabel: TextView
-    private lateinit var currency: EditText
+    private lateinit var tareInput: EditText
+    private lateinit var discountInput: EditText
+    private lateinit var currencyInput: EditText
+
+    // عناصر العرض
     private lateinit var unitValue: TextView
     private lateinit var hundredValue: TextView
     private lateinit var kiloValue: TextView
     private lateinit var resultTitle: TextView
     private lateinit var targetValue: TextView
+    private lateinit var targetSubInfo: TextView
     private lateinit var swapButton: Button
-    private lateinit var historyBox: LinearLayout
+    private lateinit var discountTypeBtn: Button
+    private lateinit var quickModeBtn: Button
     private lateinit var activeLabel: TextView
+
+    // البطاقات القابلة للإخفاء في الوضع السريع
+    private lateinit var baseCard: LinearLayout
+    private lateinit var displayCard: LinearLayout
+    private lateinit var historyCard: LinearLayout
+    private lateinit var resetButton: Button
+
+    // السجل وذاكرة الأسعار
+    private lateinit var historySummary: TextView
+    private lateinit var historyBox: LinearLayout
     private var activeInput: EditText? = null
-    private var reverseMode = false // false: الوزن -> السعر | true: السعر -> الوزن
+
+    private var reverseMode = false       // false: الوزن -> السعر | true: السعر -> الوزن
+    private var discountIsPercent = true  // true: % | false: مبلغ ثابت
+    private var quickMode = false         // وضع الاستخدام السريع
+    private var currentProductName = ""
+
     private val history = mutableListOf<JSONObject>()
-    private val fmt = DecimalFormat("#,##0.####", DecimalFormatSymbols(Locale.US))
+    private val savedProducts = mutableListOf<JSONObject>()
+    private val fmt = DecimalFormat("#,##0.##", DecimalFormatSymbols(Locale.US))
+    private val timeFmt = SimpleDateFormat("yyyy/MM/dd - hh:mm a", Locale.US)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
             window.statusBarColor = deep
             window.navigationBarColor = deep
-            loadHistory()
+            loadData()
             buildScreen()
             calculate()
             renderHistory()
@@ -73,14 +107,14 @@ class MainActivity : Activity() {
 
     private fun card(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(15), dp(16), dp(15))
+        setPadding(dp(15), dp(14), dp(15), dp(14))
         background = bg(Color.WHITE, 20f)
         elevation = dp(2).toFloat()
     }
 
-    private fun title(s: String): TextView = text(s, 16f, deep, true).apply {
+    private fun title(s: String): TextView = text(s, 15f, deep, true).apply {
         gravity = Gravity.RIGHT
-        setPadding(0, 0, 0, dp(12))
+        setPadding(0, 0, 0, dp(10))
     }
 
     private fun field(
@@ -88,30 +122,34 @@ class MainActivity : Activity() {
         hint: String,
         target: (EditText) -> Unit,
         labelRef: ((TextView) -> Unit)? = null,
-        decimal: Boolean = true
+        decimal: Boolean = true,
+        defaultText: String = ""
     ): LinearLayout {
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val labelView = text(label, 12f, Color.DKGRAY, false)
+        val labelView = text(label, 11.5f, Color.DKGRAY, false)
         labelView.gravity = Gravity.RIGHT
         labelRef?.invoke(labelView)
         wrap.addView(labelView)
         val e = EditText(this).apply {
             this.hint = hint
-            textSize = 18f
+            if (defaultText.isNotEmpty()) setText(defaultText)
+            textSize = 17f
             setTextColor(ink)
             setHintTextColor(Color.LTGRAY)
             gravity = Gravity.CENTER
             inputType = if (decimal) InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                        else InputType.TYPE_CLASS_TEXT
-            background = bg(Color.rgb(250,252,250), 12f)
-            setPadding(dp(8), dp(9), dp(8), dp(9))
+            else InputType.TYPE_CLASS_TEXT
+            background = bg(Color.rgb(250, 252, 250), 12f)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             isSingleLine = true
         }
         e.onFocusChangeListener = View.OnFocusChangeListener { _, has ->
             if (has) {
                 activeInput = e
-                activeLabel.text = "الحقل المحدد: ${labelView.text}"
+                if (::activeLabel.isInitialized) {
+                    activeLabel.text = "الحقل المحدد: ${labelView.text}"
+                }
             }
         }
         e.addTextChangedListener(object : android.text.TextWatcher {
@@ -120,26 +158,48 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
         target(e)
-        wrap.addView(e, LinearLayout.LayoutParams(-1, dp(49)))
+        wrap.addView(e, LinearLayout.LayoutParams(-1, dp(46)))
         return wrap
     }
 
     private fun buildScreen() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(239,243,240))
+            setBackgroundColor(Color.rgb(239, 243, 240))
             layoutDirection = View.LAYOUT_DIRECTION_RTL
         }
+
+        // الشريط العلوي
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(22), dp(20), dp(24))
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                intArrayOf(deep, Color.rgb(36,107,85))).apply {
-                cornerRadii = floatArrayOf(0f,0f,0f,0f,dp(25).toFloat(),dp(25).toFloat(),dp(25).toFloat(),dp(25).toFloat())
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(deep, Color.rgb(36, 107, 85))
+            ).apply {
+                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, dp(24).toFloat(), dp(24).toFloat(), dp(24).toFloat(), dp(24).toFloat())
             }
         }
-        header.addView(text("⚖️  الميزان الذكي", 23f, Color.WHITE, true))
-        header.addView(text("حاسبة أسعار وأوزان — مثل الميزان التجاري", 12f, Color.rgb(218,237,226)))
+
+        val topBar = horizontal()
+        val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        titleBox.addView(text("⚖️ الميزان الذكي", 21f, Color.WHITE, true))
+        titleBox.addView(text("حاسبة تجارية ذكية", 11f, Color.rgb(218, 237, 226)))
+        topBar.addView(titleBox, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val presetsBtn = button("📦 الأصناف", Color.rgb(42, 122, 98), Color.WHITE).apply {
+            textSize = 12f
+            setOnClickListener { showProductsDialog() }
+        }
+        topBar.addView(presetsBtn, LinearLayout.LayoutParams(-2, dp(36)).apply { setMargins(dp(4), 0, dp(4), 0) })
+
+        quickModeBtn = button("⚡ وضع سريع", Color.rgb(42, 122, 98), Color.WHITE).apply {
+            textSize = 12f
+            setOnClickListener { toggleQuickMode() }
+        }
+        topBar.addView(quickModeBtn, LinearLayout.LayoutParams(-2, dp(36)))
+
+        header.addView(topBar)
         root.addView(header)
 
         val scroll = ScrollView(this)
@@ -150,134 +210,222 @@ class MainActivity : Activity() {
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        val baseCard = card()
-        baseCard.addView(title("① بيانات الوزن والسعر الأساسي"))
+        // ① بطاقة التسعير الأساسي + العملات + حفظ الصنف
+        baseCard = card()
+        val baseHeader = horizontal()
+        baseHeader.addView(title("① التسعير الأساسي والعملة"), LinearLayout.LayoutParams(0, -2, 1f))
+        val saveProdBtn = button("＋ حفظ كصنف", pale, deep).apply {
+            textSize = 11.5f
+            setOnClickListener { promptSaveProduct() }
+        }
+        baseHeader.addView(saveProdBtn, LinearLayout.LayoutParams(-2, dp(32)))
+        baseCard.addView(baseHeader)
+
         val baseRow = horizontal()
         val col1 = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val col2 = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col1.addView(field("الوزن الإجمالي (جرام)", "مثلاً 1000", { baseWeight = it }))
-        col2.addView(field("السعر الإجمالي", "مثلاً 5000", { basePrice = it }))
+        col1.addView(field("الوزن الأساسي (جرام)", "1000", { baseWeight = it }, defaultText = "1000"))
+        col2.addView(field("السعر الأساسي", "5000", { basePrice = it }))
         baseRow.addView(col1, LinearLayout.LayoutParams(0, -2, 1f))
-        baseRow.addView(col2, LinearLayout.LayoutParams(0, -2, 1f))
+        baseRow.addView(col2, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(8), 0) })
         baseCard.addView(baseRow)
+
+        val curRow = horizontal().apply { setPadding(0, dp(8), 0, 0) }
+        val currencies = listOf("ر.ي", "ر.س", "$")
+        currencies.forEach { c ->
+            val cb = button(c, pale, deep).apply {
+                textSize = 12f
+                setOnClickListener { currencyInput.setText(c); calculate() }
+            }
+            curRow.addView(cb, LinearLayout.LayoutParams(dp(44), dp(38)).apply { setMargins(dp(3), dp(14), dp(3), 0) })
+        }
+        val curFieldWrap = field("العملة", "ر.ي", { currencyInput = it }, decimal = false, defaultText = "ر.ي")
+        curRow.addView(curFieldWrap, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(6), 0) })
+        baseCard.addView(curRow)
+
         content.addView(baseCard, marginParams())
 
-        val display = LinearLayout(this).apply {
+        // لوحة الأسعار المرجعية
+        displayCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(15), dp(15), dp(15), dp(15))
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                intArrayOf(deep, Color.rgb(27,93,76))).apply { cornerRadius = dp(18).toFloat() }
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(deep, Color.rgb(27, 93, 76))
+            ).apply { cornerRadius = dp(18).toFloat() }
         }
-        display.addView(text("سعر الجرام الواحد", 13f, Color.rgb(213,235,222)).apply { gravity = Gravity.CENTER })
-        unitValue = text("—", 38f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
-        display.addView(unitValue)
-        display.addView(text("سعر 100 جرام                 سعر الكيلو", 11f, Color.rgb(213,235,222)).apply { gravity = Gravity.CENTER })
+        displayCard.addView(text("سعر الجرام الواحد", 12f, Color.rgb(213, 235, 222)).apply { gravity = Gravity.CENTER })
+        unitValue = text("—", 32f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
+        displayCard.addView(unitValue)
+        displayCard.addView(text("سعر 100 جرام                 سعر الكيلو", 11f, Color.rgb(213, 235, 222)).apply { gravity = Gravity.CENTER })
         val stats = horizontal()
-        hundredValue = text("—", 17f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
-        kiloValue = text("—", 17f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
-        stats.addView(hundredValue, LinearLayout.LayoutParams(0, dp(35), 1f))
-        stats.addView(kiloValue, LinearLayout.LayoutParams(0, dp(35), 1f))
-        display.addView(stats)
-        content.addView(display, marginParams())
+        hundredValue = text("—", 16f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
+        kiloValue = text("—", 16f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
+        stats.addView(hundredValue, LinearLayout.LayoutParams(0, dp(30), 1f))
+        stats.addView(kiloValue, LinearLayout.LayoutParams(0, dp(30), 1f))
+        displayCard.addView(stats)
+        content.addView(displayCard, marginParams())
 
+        // ② بطاقة الحساب (الوزن <-> السعر + العبوة + الخصم)
         val targetCard = card()
-        targetCard.addView(title("② حساب سعر وزن محدد أو وزن قيمة"))
+        targetCard.addView(title("② حاسبة البيع"))
 
         val swapBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             background = bg(Color.rgb(245, 249, 246), 14f)
         }
-        swapBar.addView(text("الوزن", 15f, deep, true).apply {
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(0, -2, 1f))
+        swapBar.addView(text("الوزن", 14f, deep, true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(0, -2, 1f))
         swapButton = button("⇄ تبديل", pale, deep).apply {
-            textSize = 13f
+            textSize = 12.5f
             setOnClickListener { toggleMode() }
         }
-        swapBar.addView(swapButton, LinearLayout.LayoutParams(-2, dp(36)).apply {
-            setMargins(dp(8), 0, dp(8), 0)
-        })
-        swapBar.addView(text("السعر", 15f, deep, true).apply {
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        targetCard.addView(swapBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        swapBar.addView(swapButton, LinearLayout.LayoutParams(-2, dp(34)).apply { setMargins(dp(6), 0, dp(6), 0) })
+        swapBar.addView(text("السعر", 14f, deep, true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(0, -2, 1f))
+        targetCard.addView(swapBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
 
-        val row = horizontal()
-        val qcol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val ccol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        qcol.addView(field(
-            "الوزن المطلوب (جرام)",
-            "مثلاً 250",
+        targetCard.addView(field(
+            "الوزن الإجمالي الموزون (جرام)",
+            "مثلاً 520",
             { calcInput = it },
             { calcInputLabel = it }
         ))
-        ccol.addView(field("العملة (اختياري)", "ريال", { currency = it }, decimal = false))
-        row.addView(qcol, LinearLayout.LayoutParams(0,-2,1f))
-        row.addView(ccol, LinearLayout.LayoutParams(0,-2,1f))
-        targetCard.addView(row)
+
+        val extrasRow = horizontal().apply { setPadding(0, dp(8), 0, 0) }
+        val tareCol = field("وزن العبوة (جرام)", "0", { tareInput = it })
+        extrasRow.addView(tareCol, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val discCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val discSubRow = horizontal()
+        val discField = field("الخصم", "0", { discountInput = it })
+        discSubRow.addView(discField, LinearLayout.LayoutParams(0, -2, 1f))
+        discountTypeBtn = button("%", pale, deep).apply {
+            textSize = 13f
+            setOnClickListener {
+                discountIsPercent = !discountIsPercent
+                text = if (discountIsPercent) "%" else "مبلغ"
+                calculate()
+            }
+        }
+        discSubRow.addView(discountTypeBtn, LinearLayout.LayoutParams(dp(48), dp(46)).apply {
+            setMargins(0, dp(16), dp(4), 0)
+        })
+        discCol.addView(discSubRow)
+        extrasRow.addView(discCol, LinearLayout.LayoutParams(0, -2, 1.15f).apply { setMargins(0, 0, dp(8), 0) })
+        targetCard.addView(extrasRow)
 
         val result = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(dp(10), dp(10), dp(10), dp(10)); background = bg(pale, 14f)
         }
-        resultTitle = text("السعر المستحق لهذا الوزن", 12f, green).apply { gravity = Gravity.CENTER }
+        resultTitle = text("السعر المستحق", 12f, green).apply { gravity = Gravity.CENTER }
         result.addView(resultTitle)
-        targetValue = text("—", 30f, deep, true).apply { gravity = Gravity.CENTER }
+        targetValue = text("—", 29f, deep, true).apply { gravity = Gravity.CENTER }
         result.addView(targetValue)
+        targetSubInfo = text("", 11f, green).apply {
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        result.addView(targetSubInfo)
         targetCard.addView(result, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
 
-        val add = button("＋ أضف إلى قائمة الحسابات", green, Color.WHITE)
-        add.setOnClickListener { addCurrent() }
-        targetCard.addView(add, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(10) })
-        val direct = button("بيع مباشر: اعتماد الوزن وإضافة العملية", deep, Color.WHITE)
-        direct.setOnClickListener { addCurrent(); calcInput.setText(""); calcInput.requestFocus() }
-        targetCard.addView(direct, LinearLayout.LayoutParams(-1, dp(46)).apply { topMargin = dp(8) })
+        val actionRow = horizontal().apply { setPadding(0, dp(10), 0, 0) }
+        val add = button("＋ أضف للسجل", green, Color.WHITE).apply {
+            setOnClickListener { addCurrent() }
+        }
+        val direct = button("✓ بيع وتصفير", deep, Color.WHITE).apply {
+            setOnClickListener {
+                if (addCurrent()) {
+                    calcInput.setText("")
+                    calcInput.requestFocus()
+                }
+            }
+        }
+        actionRow.addView(add, LinearLayout.LayoutParams(0, dp(46), 1f))
+        actionRow.addView(direct, LinearLayout.LayoutParams(0, dp(46), 1f).apply { setMargins(0, 0, dp(8), 0) })
+        targetCard.addView(actionRow)
         content.addView(targetCard, marginParams())
 
+        // ③ لوحة الأرقام السريعة
         val padCard = card()
         padCard.addView(title("③ لوحة الأرقام السريعة"))
-        activeLabel = text("الحقل المحدد: الوزن الإجمالي", 12f, green, true)
-        activeLabel.gravity = Gravity.RIGHT
+        activeLabel = text("الحقل المحدد: الوزن الإجمالي الموزون", 11.5f, green, true).apply {
+            gravity = Gravity.RIGHT
+        }
         padCard.addView(activeLabel)
-        val keys = listOf("7","8","9","4","5","6","1","2","3","0",".","⌫","مسح الحقل")
+        val keys = listOf("7", "8", "9", "4", "5", "6", "1", "2", "3", "0", ".", "⌫", "مسح الحقل")
         keys.chunked(3).forEach { chunk ->
             val r = horizontal()
             chunk.forEach { key ->
-                val b = button(key, if (key=="⌫" || key=="مسح الحقل") Color.rgb(255,240,231) else Color.rgb(237,243,239),
-                    if (key=="⌫" || key=="مسح الحقل") Color.rgb(166,77,34) else deep)
-                b.textSize = if (key=="مسح الحقل") 12f else 19f
+                val isAction = (key == "⌫" || key == "مسح الحقل")
+                val b = button(
+                    key,
+                    if (isAction) softOrange else Color.rgb(237, 243, 239),
+                    if (isAction) accentOrange else deep
+                )
+                b.textSize = if (key == "مسح الحقل") 12f else 19f
                 b.setOnClickListener { keypad(key) }
-                r.addView(b, LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3),dp(4),dp(3),dp(4)) })
+                r.addView(b, LinearLayout.LayoutParams(0, dp(46), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
             }
             padCard.addView(r)
         }
         content.addView(padCard, marginParams())
 
-        val historyCard = card()
-        historyCard.addView(title("④ سجل العمليات"))
+        // ④ سجل المبيعات الاحترافي
+        historyCard = card()
+        historyCard.addView(title("④ سجل المبيعات"))
+        historySummary = text("العمليات: 0 | الإجمالي: 0", 12.5f, deep, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = bg(pale, 10f)
+        }
+        historyCard.addView(historySummary, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+
         historyBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         historyCard.addView(historyBox)
+
         val controls = horizontal()
-        val clear = button("مسح السجل", Color.rgb(237,243,239), deep)
-        clear.setOnClickListener { history.clear(); saveHistory(); renderHistory() }
-        val share = button("مشاركة النتائج", Color.rgb(237,243,239), deep)
-        share.setOnClickListener { shareHistory() }
-        controls.addView(clear, LinearLayout.LayoutParams(0, dp(45), 1f).apply { setMargins(dp(3),dp(8),dp(3),0) })
-        controls.addView(share, LinearLayout.LayoutParams(0, dp(45), 1f).apply { setMargins(dp(3),dp(8),dp(3),0) })
+        val exportCsv = button("تصدير Excel", pale, deep).apply {
+            textSize = 12f
+            setOnClickListener { exportToCsv() }
+        }
+        val exportPdf = button("تصدير PDF", pale, deep).apply {
+            textSize = 12f
+            setOnClickListener { exportToPdf() }
+        }
+        val clear = button("مسح الكل", softOrange, accentOrange).apply {
+            textSize = 12f
+            setOnClickListener { confirmClearHistory() }
+        }
+        controls.addView(exportCsv, LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(2), dp(8), dp(2), 0) })
+        controls.addView(exportPdf, LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(2), dp(8), dp(2), 0) })
+        controls.addView(clear, LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(2), dp(8), dp(2), 0) })
         historyCard.addView(controls)
         content.addView(historyCard, marginParams())
 
-        val reset = button("تصفير العملية الحالية", Color.rgb(255,240,231), Color.rgb(166,77,34))
-        reset.setOnClickListener {
-            baseWeight.setText(""); basePrice.setText(""); calcInput.setText("")
-            calculate(); baseWeight.requestFocus()
+        resetButton = button("تصفير الحقول الحالية", softOrange, accentOrange).apply {
+            setOnClickListener {
+                calcInput.setText(""); tareInput.setText(""); discountInput.setText("")
+                calculate(); calcInput.requestFocus()
+            }
         }
-        content.addView(reset, marginParams())
+        content.addView(resetButton, marginParams())
+
         setContentView(root)
-        baseWeight.requestFocus()
+        calcInput.requestFocus()
+    }
+
+    private fun toggleQuickMode() {
+        quickMode = !quickMode
+        val vis = if (quickMode) View.GONE else View.VISIBLE
+        baseCard.visibility = vis
+        displayCard.visibility = vis
+        historyCard.visibility = vis
+        resetButton.visibility = vis
+        quickModeBtn.text = if (quickMode) "🔓 إظهار الكل" else "⚡ وضع سريع"
+        quickModeBtn.background = bg(if (quickMode) accentOrange else Color.rgb(42, 122, 98), 12f)
     }
 
     private fun toggleMode() {
@@ -285,13 +433,13 @@ class MainActivity : Activity() {
         if (reverseMode) {
             calcInputLabel.text = "المبلغ المطلوب"
             calcInput.hint = "مثلاً 500"
-            resultTitle.text = "الوزن المقابل لهذا المبلغ (جرام)"
+            resultTitle.text = "الوزن الصافي المقابل (جرام)"
             swapButton.background = bg(green, 12f)
             swapButton.setTextColor(Color.WHITE)
         } else {
-            calcInputLabel.text = "الوزن المطلوب (جرام)"
-            calcInput.hint = "مثلاً 250"
-            resultTitle.text = "السعر المستحق لهذا الوزن"
+            calcInputLabel.text = "الوزن الإجمالي الموزون (جرام)"
+            calcInput.hint = "مثلاً 520"
+            resultTitle.text = "السعر المستحق"
             swapButton.background = bg(pale, 12f)
             swapButton.setTextColor(deep)
         }
@@ -308,121 +456,5 @@ class MainActivity : Activity() {
     }
 
     private fun button(label: String, color: Int, fg: Int) = Button(this).apply {
-        text = label; textSize = 14f; isAllCaps = false; setTextColor(fg)
-        background = bg(color, 12f); stateListAnimator = null
-        minimumHeight = 0; minHeight = 0; setPadding(dp(7),0,dp(7),0)
-    }
-
-    private fun marginParams() = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun number(e: EditText): Double? = e.text.toString().trim().replace(',', '.').toDoubleOrNull()
-
-    private fun calculate() {
-        val w = number(baseWeight); val p = number(basePrice); val x = number(calcInput)
-        val unit = if (w != null && p != null && w > 0 && p >= 0) p / w else null
-        unitValue.text = unit?.let { fmt.format(it) } ?: "—"
-        hundredValue.text = unit?.let { fmt.format(it * 100) } ?: "—"
-        kiloValue.text = unit?.let { fmt.format(it * 1000) } ?: "—"
-        targetValue.text = if (unit != null && x != null && x >= 0) {
-            if (reverseMode) {
-                if (unit > 0) "${fmt.format(x / unit)} جرام" else "—"
-            } else {
-                val cur = currency.text.toString().trim()
-                if (cur.isNotEmpty()) "${fmt.format(x * unit)} $cur" else fmt.format(x * unit)
-            }
-        } else {
-            "—"
-        }
-    }
-
-    private fun keypad(key: String) {
-        val e = activeInput ?: baseWeight
-        val old = e.text.toString()
-        when (key) {
-            "مسح الحقل" -> e.setText("")
-            "⌫" -> if (old.isNotEmpty()) e.setText(old.dropLast(1))
-            "." -> if (!old.contains(".")) e.setText(if (old.isEmpty()) "0." else old + ".")
-            else -> e.setText(old + key)
-        }
-        e.setSelection(e.text.length)
-        e.requestFocus()
-    }
-
-    private fun addCurrent() {
-        val w = number(baseWeight); val p = number(basePrice); val x = number(calcInput)
-        if (w == null || p == null || x == null || w <= 0 || p < 0 || x < 0) {
-            Toast.makeText(this, "أدخل الوزن والسعر الإجمالي والقيمة المطلوبة بشكل صحيح", Toast.LENGTH_LONG).show()
-            return
-        }
-        val unit = p / w
-        val weight = if (reverseMode) {
-            if (unit > 0) x / unit else {
-                Toast.makeText(this, "سعر الجرام يجب أن يكون أكبر من صفر", Toast.LENGTH_LONG).show()
-                return
-            }
-        } else {
-            x
-        }
-        val price = if (reverseMode) x else unit * x
-        val item = JSONObject().put("weight", weight).put("price", price).put("unit", unit)
-            .put("currency", currency.text.toString().trim())
-        history.add(0, item)
-        saveHistory(); renderHistory()
-        Toast.makeText(this, "تمت إضافة العملية إلى السجل", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun renderHistory() {
-        if (!::historyBox.isInitialized) return
-        historyBox.removeAllViews()
-        if (history.isEmpty()) {
-            historyBox.addView(text("لا توجد عمليات مسجلة بعد.", 12f, Color.GRAY).apply {
-                gravity = Gravity.CENTER; setPadding(0,dp(12),0,dp(12))
-            })
-            return
-        }
-        history.take(50).forEachIndexed { index, item ->
-            val weight = item.optDouble("weight")
-            val price = item.optDouble("price")
-            val cur = item.optString("currency")
-            val line = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10),dp(9),dp(10),dp(9)); background = bg(Color.rgb(248,250,248),12f)
-            }
-            val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            left.addView(text("${fmt.format(weight)} جرام",14f,deep,true))
-            left.addView(text("سعر الجرام: ${fmt.format(item.optDouble("unit"))}",10f,Color.GRAY))
-            line.addView(left, LinearLayout.LayoutParams(0,-2,1f))
-            line.addView(text("${fmt.format(price)} $cur",15f,deep,true))
-            historyBox.addView(line, LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
-        }
-    }
-
-    private fun saveHistory() {
-        val arr = JSONArray()
-        history.forEach { arr.put(it) }
-        getSharedPreferences("mizan", Context.MODE_PRIVATE).edit().putString("history",arr.toString()).apply()
-    }
-
-    private fun loadHistory() {
-        val raw = getSharedPreferences("mizan", Context.MODE_PRIVATE).getString("history","[]") ?: "[]"
-        try {
-            val arr = JSONArray(raw)
-            for (i in 0 until arr.length()) history.add(arr.getJSONObject(i))
-        } catch (_: Exception) {}
-    }
-
-    private fun shareHistory() {
-        if (history.isEmpty()) {
-            Toast.makeText(this,"السجل فارغ",Toast.LENGTH_SHORT).show(); return
-        }
-        val body = history.take(50).joinToString("\n") {
-            "${fmt.format(it.optDouble("weight"))} جرام = ${fmt.format(it.optDouble("price"))} ${it.optString("currency")}"
-        }
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT,"سجل الميزان الذكي")
-            putExtra(Intent.EXTRA_TEXT,"نتائج الميزان الذكي\n$body")
-        }
-        startActivity(Intent.createChooser(intent,"مشاركة النتائج"))
-    }
-}
+        text = label; textSize = 13.5f; isAllCaps = false; setTextColor(fg)
+        background = bg(color, 12f); stateL
