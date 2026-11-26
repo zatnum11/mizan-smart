@@ -2,27 +2,84 @@ package com.mizan.smart
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ContentProvider
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
+import android.database.MatrixCursor
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.pdf.PdfDocument
+import android.net.Uri
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.widget.*
-import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+class ExportFileProvider : ContentProvider() {
+    override fun onCreate(): Boolean = true
+
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
+        val ctx = context ?: throw FileNotFoundException()
+        val name = uri.lastPathSegment ?: throw FileNotFoundException()
+        if (name.contains("..") || name.contains("/")) throw FileNotFoundException()
+        val dir = File(ctx.cacheDir, "exports")
+        val file = File(dir, name)
+        if (!file.exists()) throw FileNotFoundException()
+        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    override fun query(
+        uri: Uri, projection: Array<out String>?, selection: String?,
+        selectionArgs: Array<out String>?, sortOrder: String?
+    ): Cursor {
+        val ctx = context!!
+        val name = uri.lastPathSegment ?: "report"
+        val file = File(File(ctx.cacheDir, "exports"), name)
+        val cols = projection ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+        val cursor = MatrixCursor(cols)
+        val row = cols.map { col ->
+            when (col) {
+                OpenableColumns.DISPLAY_NAME -> name
+                OpenableColumns.SIZE -> if (file.exists()) file.length() else 0L
+                else -> null
+            }
+        }
+        cursor.addRow(row)
+        return cursor
+    }
+
+    override fun getType(uri: Uri): String? {
+        val name = uri.lastPathSegment?.lowercase(Locale.US) ?: ""
+        return when {
+            name.endsWith(".csv") -> "text/csv"
+            name.endsWith(".pdf") -> "application/pdf"
+            else -> "application/octet-stream"
+        }
+    }
+
+    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+}
 
 class MainActivity : Activity() {
     private val deep = Color.rgb(18, 60, 53)
@@ -32,7 +89,6 @@ class MainActivity : Activity() {
     private val accentOrange = Color.rgb(166, 77, 34)
     private val softOrange = Color.rgb(255, 240, 231)
 
-    // حقول الإدخال
     private lateinit var baseWeight: EditText
     private lateinit var basePrice: EditText
     private lateinit var calcInput: EditText
@@ -41,7 +97,6 @@ class MainActivity : Activity() {
     private lateinit var discountInput: EditText
     private lateinit var currencyInput: EditText
 
-    // عناصر العرض
     private lateinit var unitValue: TextView
     private lateinit var hundredValue: TextView
     private lateinit var kiloValue: TextView
@@ -53,20 +108,18 @@ class MainActivity : Activity() {
     private lateinit var quickModeBtn: Button
     private lateinit var activeLabel: TextView
 
-    // البطاقات القابلة للإخفاء في الوضع السريع
     private lateinit var baseCard: LinearLayout
     private lateinit var displayCard: LinearLayout
     private lateinit var historyCard: LinearLayout
     private lateinit var resetButton: Button
 
-    // السجل وذاكرة الأسعار
     private lateinit var historySummary: TextView
     private lateinit var historyBox: LinearLayout
     private var activeInput: EditText? = null
 
-    private var reverseMode = false       // false: الوزن -> السعر | true: السعر -> الوزن
-    private var discountIsPercent = true  // true: % | false: مبلغ ثابت
-    private var quickMode = false         // وضع الاستخدام السريع
+    private var reverseMode = false
+    private var discountIsPercent = true
+    private var quickMode = false
     private var currentProductName = ""
 
     private val history = mutableListOf<JSONObject>()
@@ -152,10 +205,10 @@ class MainActivity : Activity() {
                 }
             }
         }
-        e.addTextChangedListener(object : android.text.TextWatcher {
+        e.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) { calculate() }
-            override fun afterTextChanged(s: android.text.Editable?) {}
+            override fun afterTextChanged(s: Editable?) {}
         })
         target(e)
         wrap.addView(e, LinearLayout.LayoutParams(-1, dp(46)))
@@ -169,7 +222,6 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_RTL
         }
 
-        // الشريط العلوي
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(18), dp(18), dp(18))
@@ -210,7 +262,6 @@ class MainActivity : Activity() {
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        // ① بطاقة التسعير الأساسي + العملات + حفظ الصنف
         baseCard = card()
         val baseHeader = horizontal()
         baseHeader.addView(title("① التسعير الأساسي والعملة"), LinearLayout.LayoutParams(0, -2, 1f))
@@ -231,8 +282,7 @@ class MainActivity : Activity() {
         baseCard.addView(baseRow)
 
         val curRow = horizontal().apply { setPadding(0, dp(8), 0, 0) }
-        val currencies = listOf("ر.ي", "ر.س", "$")
-        currencies.forEach { c ->
+        listOf("ر.ي", "ر.س", "$").forEach { c ->
             val cb = button(c, pale, deep).apply {
                 textSize = 12f
                 setOnClickListener { currencyInput.setText(c); calculate() }
@@ -245,7 +295,6 @@ class MainActivity : Activity() {
 
         content.addView(baseCard, marginParams())
 
-        // لوحة الأسعار المرجعية
         displayCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -267,7 +316,6 @@ class MainActivity : Activity() {
         displayCard.addView(stats)
         content.addView(displayCard, marginParams())
 
-        // ② بطاقة الحساب (الوزن <-> السعر + العبوة + الخصم)
         val targetCard = card()
         targetCard.addView(title("② حاسبة البيع"))
 
@@ -348,7 +396,6 @@ class MainActivity : Activity() {
         targetCard.addView(actionRow)
         content.addView(targetCard, marginParams())
 
-        // ③ لوحة الأرقام السريعة
         val padCard = card()
         padCard.addView(title("③ لوحة الأرقام السريعة"))
         activeLabel = text("الحقل المحدد: الوزن الإجمالي الموزون", 11.5f, green, true).apply {
@@ -373,7 +420,6 @@ class MainActivity : Activity() {
         }
         content.addView(padCard, marginParams())
 
-        // ④ سجل المبيعات الاحترافي
         historyCard = card()
         historyCard.addView(title("④ سجل المبيعات"))
         historySummary = text("العمليات: 0 | الإجمالي: 0", 12.5f, deep, true).apply {
@@ -457,4 +503,364 @@ class MainActivity : Activity() {
 
     private fun button(label: String, color: Int, fg: Int) = Button(this).apply {
         text = label; textSize = 13.5f; isAllCaps = false; setTextColor(fg)
-        background = bg(color, 12f); stateL
+        background = bg(color, 12f); stateListAnimator = null
+        minimumHeight = 0; minHeight = 0; setPadding(dp(6), 0, dp(6), 0)
+    }
+
+    private fun marginParams() = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(11) }
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun number(e: EditText): Double? = e.text.toString().trim().replace(',', '.').toDoubleOrNull()
+
+    private fun calculate() {
+        val w = number(baseWeight)
+        val p = number(basePrice)
+        val x = number(calcInput)
+        val tare = number(tareInput) ?: 0.0
+        val disc = number(discountInput) ?: 0.0
+        val cur = currencyInput.text.toString().trim()
+
+        val unit = if (w != null && p != null && w > 0 && p >= 0) p / w else null
+        unitValue.text = unit?.let { fmt.format(it) } ?: "—"
+        hundredValue.text = unit?.let { fmt.format(it * 100) } ?: "—"
+        kiloValue.text = unit?.let { fmt.format(it * 1000) } ?: "—"
+
+        if (unit == null || x == null || x < 0) {
+            targetValue.text = "—"
+            targetSubInfo.visibility = View.GONE
+            return
+        }
+
+        val infoParts = mutableListOf<String>()
+
+        if (!reverseMode) {
+            val netWeight = (x - tare).coerceAtLeast(0.0)
+            if (tare > 0) infoParts.add("الوزن الصافي: ${fmt.format(netWeight)} جم")
+            val rawPrice = netWeight * unit
+            val finalPrice = if (discountIsPercent) {
+                (rawPrice * (1.0 - (disc / 100.0))).coerceAtLeast(0.0)
+            } else {
+                (rawPrice - disc).coerceAtLeast(0.0)
+            }
+            if (disc > 0) infoParts.add("قبل الخصم: ${fmt.format(rawPrice)}")
+            targetValue.text = if (cur.isNotEmpty()) "${fmt.format(finalPrice)} $cur" else fmt.format(finalPrice)
+        } else {
+            if (unit <= 0) {
+                targetValue.text = "—"
+                targetSubInfo.visibility = View.GONE
+                return
+            }
+            val effectiveAmount = if (discountIsPercent) {
+                if (disc < 100) x / (1.0 - (disc / 100.0)) else x
+            } else {
+                x + disc
+            }
+            val netWeight = effectiveAmount / unit
+            val grossWeight = netWeight + tare
+            targetValue.text = "${fmt.format(netWeight)} جرام"
+            if (tare > 0) infoParts.add("الوزن الإجمالي مع العبوة: ${fmt.format(grossWeight)} جم")
+            if (disc > 0) infoParts.add("شامل خصم: ${fmt.format(disc)}${if (discountIsPercent) "%" else " $cur"}")
+        }
+
+        if (infoParts.isNotEmpty()) {
+            targetSubInfo.text = infoParts.joinToString("  •  ")
+            targetSubInfo.visibility = View.VISIBLE
+        } else {
+            targetSubInfo.visibility = View.GONE
+        }
+    }
+
+    private fun keypad(key: String) {
+        val e = activeInput ?: calcInput
+        val old = e.text.toString()
+        when (key) {
+            "مسح الحقل" -> e.setText("")
+            "⌫" -> if (old.isNotEmpty()) e.setText(old.dropLast(1))
+            "." -> if (!old.contains(".")) e.setText(if (old.isEmpty()) "0." else old + ".")
+            else -> e.setText(old + key)
+        }
+        e.setSelection(e.text.length)
+        e.requestFocus()
+    }
+
+    private fun addCurrent(): Boolean {
+        val w = number(baseWeight)
+        val p = number(basePrice)
+        val x = number(calcInput)
+        val tare = number(tareInput) ?: 0.0
+        val disc = number(discountInput) ?: 0.0
+        val cur = currencyInput.text.toString().trim()
+
+        if (w == null || p == null || x == null || w <= 0 || p < 0 || x < 0) {
+            Toast.makeText(this, "أدخل البيانات الأساسية والقيمة المطلوبة بشكل صحيح", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        val unit = p / w
+        val netWeight: Double
+        val finalPrice: Double
+
+        if (!reverseMode) {
+            netWeight = (x - tare).coerceAtLeast(0.0)
+            val rawPrice = netWeight * unit
+            finalPrice = if (discountIsPercent) {
+                (rawPrice * (1.0 - (disc / 100.0))).coerceAtLeast(0.0)
+            } else {
+                (rawPrice - disc).coerceAtLeast(0.0)
+            }
+        } else {
+            if (unit <= 0) return false
+            val effectiveAmount = if (discountIsPercent) {
+                if (disc < 100) x / (1.0 - (disc / 100.0)) else x
+            } else {
+                x + disc
+            }
+            netWeight = effectiveAmount / unit
+            finalPrice = x
+        }
+
+        val item = JSONObject()
+            .put("product", currentProductName)
+            .put("weight", netWeight)
+            .put("price", finalPrice)
+            .put("unit", unit)
+            .put("currency", cur)
+            .put("time", timeFmt.format(Date()))
+
+        history.add(0, item)
+        saveData()
+        renderHistory()
+        Toast.makeText(this, "تم تسجيل العملية", Toast.LENGTH_SHORT).show()
+        return true
+    }
+
+    private fun renderHistory() {
+        if (!::historyBox.isInitialized) return
+        historyBox.removeAllViews()
+
+        val totalSales = history.sumOf { it.optDouble("price", 0.0) }
+        val mainCur = currencyInput.text.toString().trim()
+        historySummary.text = "عدد العمليات: ${history.size}   |   الإجمالي: ${fmt.format(totalSales)} $mainCur"
+
+        if (history.isEmpty()) {
+            historyBox.addView(text("لا توجد عمليات مسجلة بعد.", 12f, Color.GRAY).apply {
+                gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(12))
+            })
+            return
+        }
+
+        history.take(100).forEachIndexed { index, item ->
+            val weight = item.optDouble("weight")
+            val price = item.optDouble("price")
+            val cur = item.optString("currency")
+            val prod = item.optString("product", "")
+            val timeStr = item.optString("time", "")
+
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(8), dp(10), dp(8)); background = bg(Color.rgb(248, 250, 248), 12f)
+            }
+
+            val infoCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val headerTitle = if (prod.isNotEmpty()) "$prod — ${fmt.format(weight)} جم" else "${fmt.format(weight)} جرام"
+            infoCol.addView(text(headerTitle, 13.5f, deep, true))
+            infoCol.addView(text(timeStr, 10f, Color.GRAY))
+            line.addView(infoCol, LinearLayout.LayoutParams(0, -2, 1f))
+
+            line.addView(text("${fmt.format(price)} $cur", 14.5f, green, true).apply {
+                setPadding(dp(8), 0, dp(8), 0)
+            })
+
+            val delBtn = button("✕", softOrange, accentOrange).apply {
+                textSize = 12f
+                setOnClickListener {
+                    history.removeAt(index)
+                    saveData()
+                    renderHistory()
+                }
+            }
+            line.addView(delBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
+
+            historyBox.addView(line, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+        }
+    }
+
+    private fun promptSaveProduct() {
+        val w = number(baseWeight)
+        val p = number(basePrice)
+        if (w == null || p == null || w <= 0) {
+            Toast.makeText(this, "أدخل الوزن والسعر الأساسي أولاً", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val input = EditText(this).apply {
+            hint = "اسم الصنف (مثلاً: بن خولاني، هيل، عسل...)"
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("حفظ تسعيرة الصنف")
+            .setView(input)
+            .setPositiveButton("حفظ") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    val obj = JSONObject()
+                        .put("name", name)
+                        .put("weight", w)
+                        .put("price", p)
+                        .put("currency", currencyInput.text.toString().trim())
+                    savedProducts.removeAll { it.optString("name") == name }
+                    savedProducts.add(0, obj)
+                    currentProductName = name
+                    saveData()
+                    Toast.makeText(this, "تم حفظ الصنف: $name", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun showProductsDialog() {
+        if (savedProducts.isEmpty()) {
+            Toast.makeText(this, "لا توجد أصناف محفوظة بعد. اضغط (＋ حفظ كصنف) لإضافة صنف.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val names = savedProducts.map {
+            "${it.optString("name")} (${fmt.format(it.optDouble("weight"))} جم = ${fmt.format(it.optDouble("price"))} ${it.optString("currency")})"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("اختر صنفاً من الذاكرة")
+            .setItems(names) { _, which ->
+                val selected = savedProducts[which]
+                currentProductName = selected.optString("name")
+                baseWeight.setText(fmt.format(selected.optDouble("weight")).replace(",", ""))
+                basePrice.setText(fmt.format(selected.optDouble("price")).replace(",", ""))
+                val c = selected.optString("currency")
+                if (c.isNotEmpty()) currencyInput.setText(c)
+                calculate()
+                Toast.makeText(this, "تم تحميل: $currentProductName", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("حذف الأصناف المحفوظة") { _, _ ->
+                savedProducts.clear()
+                currentProductName = ""
+                saveData()
+                Toast.makeText(this, "تم مسح ذاكرة الأصناف", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("إغلاق", null)
+            .show()
+    }
+
+    private fun exportToCsv() {
+        if (history.isEmpty()) {
+            Toast.makeText(this, "السجل فارغ", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val sb = StringBuilder("\uFEFF")
+            sb.append("الصنف,الوزن الصافي (جرام),السعر النهائي,العملة,الوقت والتاريخ\n")
+            for (item in history) {
+                val prod = item.optString("product").ifEmpty { "عام" }
+                val w = item.optDouble("weight")
+                val p = item.optDouble("price")
+                val c = item.optString("currency")
+                val t = item.optString("time")
+                sb.append("\"$prod\",$w,$p,\"$c\",\"$t\"\n")
+            }
+            val dir = File(cacheDir, "exports").apply { mkdirs() }
+            val file = File(dir, "MizanSmart_Sales.csv")
+            file.writeText(sb.toString(), Charsets.UTF_8)
+            shareFile(file, "text/csv", "تصدير سجل المبيعات (Excel)")
+        } catch (e: Exception) {
+            Toast.makeText(this, "فشل التصدير: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun exportToPdf() {
+        if (history.isEmpty()) {
+            Toast.makeText(this, "السجل فارغ", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val pdf = PdfDocument()
+            val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
+            val page = pdf.startPage(pageInfo)
+            val canvas = page.canvas
+            val paint = Paint().apply {
+                color = Color.BLACK
+                textSize = 14f
+            }
+            var y = 50f
+            paint.isFakeBoldText = true
+            paint.textSize = 18f
+            canvas.drawText("MizanSmart Sales Report", 60f, y, paint)
+            y += 28f
+            paint.textSize = 13f
+            paint.isFakeBoldText = false
+            val total = history.sumOf { it.optDouble("price", 0.0) }
+            canvas.drawText("Operations: ${history.size}  |  Total: ${fmt.format(total)}", 60f, y, paint)
+            y += 25f
+            canvas.drawLine(40f, y, 555f, y, paint)
+            y += 22f
+
+            for (item in history.take(32)) {
+                val prod = item.optString("product").ifEmpty { "Item" }
+                val lineText = "$prod | ${fmt.format(item.optDouble("weight"))} g | ${fmt.format(item.optDouble("price"))} ${item.optString("currency")} | ${item.optString("time")}"
+                canvas.drawText(lineText, 60f, y, paint)
+                y += 22f
+            }
+            pdf.finishPage(page)
+
+            val dir = File(cacheDir, "exports").apply { mkdirs() }
+            val file = File(dir, "MizanSmart_Report.pdf")
+            FileOutputStream(file).use { pdf.writeTo(it) }
+            pdf.close()
+            shareFile(file, "application/pdf", "تصدير تقرير المبيعات (PDF)")
+        } catch (e: Exception) {
+            Toast.makeText(this, "فشل إنشاء PDF: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun shareFile(file: File, mime: String, title: String) {
+        val uri = Uri.parse("content://${packageName}.provider/${file.name}")
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, title))
+    }
+
+    private fun confirmClearHistory() {
+        if (history.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle("مسح السجل")
+            .setMessage("هل تريد حذف جميع العمليات المسجلة؟")
+            .setPositiveButton("نعم") { _, _ ->
+                history.clear()
+                saveData()
+                renderHistory()
+            }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun saveData() {
+        val hArr = JSONArray()
+        history.forEach { hArr.put(it) }
+        val pArr = JSONArray()
+        savedProducts.forEach { pArr.put(it) }
+        getSharedPreferences("mizan", Context.MODE_PRIVATE).edit()
+            .putString("history", hArr.toString())
+            .putString("products", pArr.toString())
+            .apply()
+    }
+
+    private fun loadData() {
+        val prefs = getSharedPreferences("mizan", Context.MODE_PRIVATE)
+        try {
+            val hArr = JSONArray(prefs.getString("history", "[]") ?: "[]")
+            for (i in 0 until hArr.length()) history.add(hArr.getJSONObject(i))
+        } catch (_: Exception) {}
+        try {
+            val pArr = JSONArray(prefs.getString("products", "[]") ?: "[]")
+            for (i in 0 until pArr.length()) savedProducts.add(pArr.getJSONObject(i))
+        } catch (_: Exception) {}
+    }
+}
